@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multi-IMEI GPS Tracker</title>
+
+    <!-- PWA -->
+    <link rel="manifest" href="/static/manifest.json">
+    <meta name="theme-color" content="#2196f3">
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+
+    <style>
+        html, body {
+            margin: 0;
+            padding: 0;
+            height: 100%;
+            width: 100%;
+            overflow: hidden;
+        }
+        #map {
+            height: 100vh;
+            width: 100vw;
+        }
+        .legend {
+            position: absolute;
+            top: 10px;
+            right: 10px;
+            background: white;
+            padding: 10px;
+            border: 1px solid #ccc;
+            z-index: 1000;
+        }
+        .legend-item {
+            margin: 5px;
+        }
+        .legend-color {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            margin-right: 5px;
+            vertical-align: middle;
+        }
+        .blinking-pin {
+            animation: blink 1s step-end infinite;
+        }
+        @keyframes blink {
+            0% { opacity: 1; }
+            50% { opacity: 0.3; }
+            100% { opacity: 1; }
+        }
+    </style>
+</head>
+
+<body>
+<div id="map"></div>
+<div class="legend" id="legend"></div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+<script>
+const map = L.map('map').setView([20.5937, 78.9629], 5);
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    attribution: '© OpenStreetMap'
+}).addTo(map);
+
+const colors = ['#FF0000','#00FF00','#0000FF','#FF00FF','#FFFF00','#00FFFF'];
+let colorIndex = 0;
+const deviceLayers = {};
+const deviceColors = {};
+let userInteracted = false;
+
+map.on('moveend zoomend', () => userInteracted = true);
+
+function getColor() {
+    return colors[colorIndex++ % colors.length];
+}
+
+function createPinIcon(color) {
+    return L.divIcon({
+        className: 'blinking-pin',
+        html: `<svg width="24" height="24" fill="${color}" viewBox="0 0 24 24">
+        <path d="M12 2C8.13 2 5 5.13 5 9c0 5.25 7 13 7 13s7-7.75 7-13c0-3.87-3.13-7-7-7z"/>
+        </svg>`,
+        iconSize: [24, 24],
+        iconAnchor: [12, 24]
+    });
+}
+
+function updateMap() {
+    const bounds = L.latLngBounds();
+
+    fetch('/gps_data')
+    .then(r => r.json())
+    .then(latest => {
+        const latestPos = {};
+        latest.forEach(d => {
+            if (d.lat && d.lng) {
+                if (!deviceLayers[d.imei]) {
+                    deviceColors[d.imei] = getColor();
+                    deviceLayers[d.imei] = L.layerGroup().addTo(map);
+                }
+                latestPos[d.imei] = d;
+            }
+        });
+
+        fetch('/playback_log')
+        .then(r => r.json())
+        .then(log => {
+            Object.values(deviceLayers).forEach(l => l.clearLayers());
+
+            log.forEach(p => {
+                if (!p.lat || !p.lng) return;
+
+                const isLatest = latestPos[p.imei] &&
+                                 latestPos[p.imei].lat === p.lat &&
+                                 latestPos[p.imei].lng === p.lng;
+
+                const layer = deviceLayers[p.imei];
+
+                if (isLatest) {
+                    layer.addLayer(
+                        L.marker([p.lat, p.lng], {
+                            icon: createPinIcon(deviceColors[p.imei])
+                        }).bindPopup(`<b>${p.name}</b><br>${p.time}`)
+                    );
+                } else {
+                    layer.addLayer(
+                        L.circleMarker([p.lat, p.lng], {
+                            radius: 5,
+                            color: deviceColors[p.imei],
+                            fillOpacity: 0.5
+                        })
+                    );
+                }
+                bounds.extend([p.lat, p.lng]);
+            });
+
+            if (!userInteracted && bounds.isValid()) {
+                map.fitBounds(bounds, { padding: [40, 40] });
+            }
+            updateLegend();
+        });
+    });
+}
+
+function updateLegend() {
+    fetch('/devices')
+    .then(r => r.json())
+    .then(devs => {
+        legend.innerHTML = '<h4>Devices</h4>';
+        devs.forEach(d => {
+            if (deviceColors[d.imei]) {
+                legend.innerHTML += `
+                <div class="legend-item">
+                    <span class="legend-color" style="background:${deviceColors[d.imei]}"></span>
+                    ${d.name}
+                </div>`;
+            }
+        });
+    });
+}
+
+updateMap();
+setInterval(updateMap, 5000);
+</script>
+
+<!-- Service Worker -->
+<script>
+if ('serviceWorker' in navigator) {
+    navigator.serviceWorker.register('/static/service-worker.js');
+}
+</script>
+
+</body>
+</html>
